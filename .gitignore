@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.Python
+build/
+dist/
+
+# Virtual environments and secrets
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Local knowledge-base documents (keep the folder)
+data/knowledge_base/**
+!data/knowledge_base/.gitkeep
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.log
+
+# Parent virtual environment
+../../.venv/
+.venv/
