@@ -1,15 +1,16 @@
-﻿import requests
+import requests
+import re
 
 OLLAMA_BASE_URL = "http://localhost:11434"
-DEFAULT_TIMEOUT = 180
+DEFAULT_TIMEOUT = 300
 
 
 def ollama_status():
-    """Check Ollama connectivity and list locally available models."""
+    """Check Ollama connectivity and available models."""
     try:
         response = requests.get(
             f"{OLLAMA_BASE_URL}/api/tags",
-            timeout=5,
+            timeout=10,
         )
         response.raise_for_status()
 
@@ -26,14 +27,47 @@ def ollama_status():
         return True, "Ollama is reachable, but no models were found."
 
     except requests.RequestException as exc:
-        return False, (
-            f"Cannot connect to Ollama at {OLLAMA_BASE_URL}. "
-            "Start the Ollama application and retry. "
-            f"Details: {exc}"
-        )
+        return False, f"Cannot connect to Ollama: {exc}"
 
     except (ValueError, TypeError) as exc:
-        return False, f"Could not parse Ollama's response: {exc}"
+        return False, f"Could not parse Ollama response: {exc}"
+
+
+def clean_model_response(content):
+    """
+    Remove explicit Qwen thinking blocks and reject obvious internal planning.
+    This is a heuristic, not a guarantee of answer quality or safety.
+    """
+    if not isinstance(content, str):
+        return ""
+
+    content = content.strip()
+
+    if "</think>" in content:
+        content = content.rsplit("</think>", 1)[-1].strip()
+    elif "<think>" in content:
+        return ""
+
+    if not content:
+        return ""
+
+    # Detect obvious internal-planning text rather than displaying it as an answer.
+    planning_patterns = [
+        r"(?im)^\s*I need to provide\b",
+        r"(?im)^\s*Let me analyze\b",
+        r"(?im)^\s*I should structure my response\b",
+        r"(?im)^\s*I must be careful to\b",
+        r"(?im)^\s*I need to structure\b",
+    ]
+
+    if any(re.search(pattern, content) for pattern in planning_patterns):
+        return ""
+
+    # Remove accidental surrounding Markdown code fences.
+    content = re.sub(r"^```(?:markdown|md|text)?\s*", "", content, flags=re.IGNORECASE)
+    content = re.sub(r"\s*```$", "", content)
+
+    return content.strip()
 
 
 def chat_with_ollama(
@@ -42,13 +76,8 @@ def chat_with_ollama(
     timeout=DEFAULT_TIMEOUT,
     temperature=0.2,
 ):
-    """
-    Generate a response using a locally installed Ollama model.
+    """Generate a response using a local Ollama model."""
 
-    Returns:
-        {"ok": True, "content": "..."} on success.
-        {"ok": False, "content": "..."} on failure.
-    """
     if not isinstance(model, str) or not model.strip():
         return {
             "ok": False,
@@ -61,18 +90,17 @@ def chat_with_ollama(
             "content": "At least one chat message is required.",
         }
 
-    if not all(
+    valid_messages = all(
         isinstance(message, dict)
         and isinstance(message.get("role"), str)
         and isinstance(message.get("content"), str)
         for message in messages
-    ):
+    )
+
+    if not valid_messages:
         return {
             "ok": False,
-            "content": (
-                "Each message must contain string values for "
-                "'role' and 'content'."
-            ),
+            "content": "Invalid chat message format.",
         }
 
     try:
@@ -85,6 +113,7 @@ def chat_with_ollama(
                 "think": False,
                 "options": {
                     "temperature": temperature,
+                    "num_predict": 512,
                 },
             },
             timeout=timeout,
@@ -93,20 +122,30 @@ def chat_with_ollama(
         response.raise_for_status()
         data = response.json()
 
-        content = data.get("message", {}).get("content", "")
+        message = data.get("message", {})
+        content = clean_model_response(message.get("content", ""))
 
-        if not isinstance(content, str) or not content.strip():
+        if not content:
             return {
                 "ok": False,
                 "content": (
-                    "The model returned an empty response. "
-                    "Check the model and retry."
+                    "The model did not return a usable final answer. "
+                    "Please retry with a shorter question."
                 ),
             }
 
         return {
             "ok": True,
-            "content": content.strip(),
+            "content": content,
+        }
+
+    except requests.exceptions.Timeout:
+        return {
+            "ok": False,
+            "content": (
+                f"The model exceeded the {timeout}-second timeout. "
+                "Try a shorter question or reduce the conversation context."
+            ),
         }
 
     except requests.exceptions.ConnectionError:
@@ -114,16 +153,7 @@ def chat_with_ollama(
             "ok": False,
             "content": (
                 "Could not connect to Ollama. "
-                "Open the Ollama application and retry."
-            ),
-        }
-
-    except requests.exceptions.Timeout:
-        return {
-            "ok": False,
-            "content": (
-                "The model timed out. Try a shorter question "
-                "or increase the timeout."
+                "Make sure Ollama is running."
             ),
         }
 
@@ -136,5 +166,5 @@ def chat_with_ollama(
     except (ValueError, TypeError) as exc:
         return {
             "ok": False,
-            "content": f"Could not parse Ollama's response: {exc}",
+            "content": f"Could not parse Ollama response: {exc}",
         }
