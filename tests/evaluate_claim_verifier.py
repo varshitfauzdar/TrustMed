@@ -5,7 +5,11 @@ import requests
 import numpy as np
 
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from claim_verification_cases import TEST_CASES
@@ -13,6 +17,8 @@ from claim_verification_cases import TEST_CASES
 
 OLLAMA_URL = "http://localhost:11434/api/embed"
 EMBED_MODEL = "nomic-embed-text"
+
+LABELS = ["RELEVANT", "PARTIAL", "UNRELATED"]
 
 
 def get_embeddings(texts):
@@ -25,7 +31,13 @@ def get_embeddings(texts):
         timeout=120,
     )
     response.raise_for_status()
-    return np.asarray(response.json()["embeddings"], dtype=float)
+
+    embeddings = response.json()["embeddings"]
+
+    if len(embeddings) != len(texts):
+        raise ValueError("Invalid embedding response.")
+
+    return np.asarray(embeddings, dtype=float)
 
 
 def cosine_score(a, b):
@@ -37,20 +49,45 @@ def cosine_score(a, b):
     return float(np.dot(a, b) / denominator)
 
 
+def predict_category(score, method):
+    """
+    Experimental thresholds for this small prototype dataset.
+    These are not clinically validated.
+    """
+
+    if method == "semantic":
+        if score >= 0.80:
+            return "RELEVANT"
+        elif score >= 0.65:
+            return "PARTIAL"
+        return "UNRELATED"
+
+    if score >= 0.25:
+        return "RELEVANT"
+    elif score >= 0.10:
+        return "PARTIAL"
+
+    return "UNRELATED"
+
+
 def evaluate():
-    print("\n=== TrustMed AI: Retrieval Similarity Comparison ===\n")
+    print("\n========== TRUSTMED AI EVALUATION ==========\n")
 
     texts = []
+
     for case in TEST_CASES:
         texts.extend([case["claim"], case["evidence"]])
 
     embeddings = get_embeddings(texts)
 
-    results = []
+    actual = []
+    lexical_predictions = []
+    semantic_predictions = []
 
     for i, case in enumerate(TEST_CASES):
         claim = case["claim"]
         evidence = case["evidence"]
+        expected = case["expected"]
 
         vectorizer = TfidfVectorizer(
             lowercase=True,
@@ -58,43 +95,86 @@ def evaluate():
             ngram_range=(1, 2),
         )
 
-        tfidf_vectors = vectorizer.fit_transform([claim, evidence])
+        vectors = vectorizer.fit_transform([claim, evidence])
 
-        tfidf_score = float(
-            cosine_similarity(
-                tfidf_vectors[0:1],
-                tfidf_vectors[1:2],
-            )[0][0]
-        )
+        lexical_score = float(
+            (vectors[0] @ vectors[1].T).toarray()[0][0]
+            / (
+                np.sqrt(vectors[0].multiply(vectors[0]).sum())
+                * np.sqrt(vectors[1].multiply(vectors[1]).sum())
+            )
+        ) if vectors.nnz else 0.0
 
         semantic_score = cosine_score(
             embeddings[2 * i],
             embeddings[2 * i + 1],
         )
 
-        results.append((case["expected"], tfidf_score, semantic_score))
+        lexical_prediction = predict_category(
+            lexical_score, "lexical"
+        )
 
-        print(f"Case {i + 1}: {case['expected']}")
+        semantic_prediction = predict_category(
+            semantic_score, "semantic"
+        )
+
+        actual.append(expected)
+        lexical_predictions.append(lexical_prediction)
+        semantic_predictions.append(semantic_prediction)
+
+        print(f"Case {i + 1}")
         print(f"Claim: {claim}")
-        print(f"Evidence: {evidence}")
-        print(f"TF-IDF score: {tfidf_score:.4f}")
-        print(f"Semantic score: {semantic_score:.4f}")
-        print("-" * 60)
+        print(f"Expected: {expected}")
+        print(f"Lexical: {lexical_score:.4f} -> {lexical_prediction}")
+        print(f"Semantic: {semantic_score:.4f} -> {semantic_prediction}")
+        print("-" * 55)
 
-    print("\nSummary")
-    print(f"Cases evaluated: {len(results)}")
-    print(
-        "Mean TF-IDF similarity: "
-        f"{np.mean([row[1] for row in results]):.4f}"
-    )
-    print(
-        "Mean semantic similarity: "
-        f"{np.mean([row[2] for row in results]):.4f}"
-    )
-    print(
-        "\nThese scores measure similarity, not truth, "
-        "medical correctness, or entailment."
-    )
+    for method, predictions in [
+        ("LEXICAL", lexical_predictions),
+        ("SEMANTIC", semantic_predictions),
+    ]:
+        print(f"\n========== {method} EVALUATION ==========")
+
+        print(
+            f"Accuracy: {accuracy_score(actual, predictions):.4f}"
+        )
+
+        print("\nClassification Report:")
+        print(
+            classification_report(
+                actual,
+                predictions,
+                labels=LABELS,
+                zero_division=0,
+            )
+        )
+
+        print("Confusion Matrix:")
+        print(confusion_matrix(actual, predictions, labels=LABELS))
+
+        print("\nMisclassified cases:")
+
+        found = False
+
+        for index, (expected, predicted) in enumerate(
+            zip(actual, predictions)
+        ):
+            if expected != predicted:
+                found = True
+                print(
+                    f"Case {index + 1}: "
+                    f"Expected={expected}, Predicted={predicted}"
+                )
+
+        if not found:
+            print("None")
+
+    print("\n===========================================")
+    print("IMPORTANT:")
+    print("Only four illustrative test cases were evaluated.")
+    print("Thresholds are experimental, not clinically validated.")
+    print("Similarity does not establish truth or entailment.")
+    print("===========================================")
 
 
 if __name__ == "__main__":

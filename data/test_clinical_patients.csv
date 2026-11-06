@@ -1,0 +1,4 @@
+﻿case_id,age,symptom,vital_name,vital_value,vital_unit,clinical_note,lab_test_name,lab_value,lab_unit,lab_reference_range
+CASE_001,45,Increased thirst,Heart Rate,82,bpm,Patient reports increased thirst,Blood Glucose,180,mg/dL,70-140
+CASE_001,45,Frequent urination,Temperature,37,C,Patient reports frequent urination,HbA1c,7.2,%,Below 5.7
+CASE_002,32,Cough,Heart Rate,90,bpm,Patient reports dry cough,,,,

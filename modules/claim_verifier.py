@@ -1,4 +1,4 @@
-﻿import re
+import re
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -8,17 +8,45 @@ from modules.semantic_matcher import (
     cosine_similarity_score,
 )
 
+from modules.claim_analyzer import analyze_claim
+
 
 def split_claims(answer: str) -> list[str]:
-    """Split an answer into sentence-level claims."""
+    """Extract meaningful user-facing statements for preliminary screening."""
+
     if not isinstance(answer, str) or not answer.strip():
         return []
 
-    return [
-        sentence.strip()
-        for sentence in re.split(r"(?<=[.!?])\s+", answer.strip())
-        if sentence.strip()
+    planning_patterns = [
+        r"^i need to provide\b",
+        r"^let me analyze\b",
+        r"^i should structure\b",
+        r"^i must be careful\b",
+        r"^i need to structure\b",
+        r"^from source \d+\b",
+        r"^i should note that\b",
     ]
+
+    # Split on sentence-ending punctuation or line breaks.
+    parts = re.split(r"(?<=[.!?])\s+|\n+", answer)
+
+    claims = []
+
+    for part in parts:
+        sentence = re.sub(r"^\s*[-*?]+\s*", "", part).strip()
+        sentence = re.sub(r"^#{1,6}\s*", "", sentence).strip()
+
+        if not sentence:
+            continue
+
+        normalized = sentence.lower()
+
+        if any(re.search(pattern, normalized) for pattern in planning_patterns):
+            continue
+
+        claims.append(sentence)
+
+    return claims
 
 
 def lexical_similarity(claim: str, evidence: str) -> float:
@@ -69,6 +97,10 @@ def verify_claims(answer: str, evidence: list[dict]) -> dict:
             "claims": [
                 {
                     "claim": claim,
+                    "linguistic_features": analyze_claim(claim)["features"],
+                    "requires_careful_review": analyze_claim(claim)[
+                        "requires_careful_review"
+                    ],
                     "lexical_score": None,
                     "semantic_score": None,
                     "status": "INSUFFICIENT_EVIDENCE",
@@ -100,6 +132,8 @@ def verify_claims(answer: str, evidence: list[dict]) -> dict:
     claim_count = len(claims)
 
     for claim_index, claim in enumerate(claims):
+        claim_analysis = analyze_claim(claim)
+
         best_lexical_score = 0.0
         best_semantic_score = None
         matching_sources = []
@@ -182,6 +216,10 @@ def verify_claims(answer: str, evidence: list[dict]) -> dict:
 
         results.append({
             "claim": claim,
+            "linguistic_features": claim_analysis["features"],
+            "requires_careful_review": claim_analysis[
+                "requires_careful_review"
+            ],
             "lexical_score": round(best_lexical_score, 4),
             "semantic_score": (
                 round(best_semantic_score, 4)

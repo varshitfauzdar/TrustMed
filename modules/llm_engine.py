@@ -1,8 +1,9 @@
-import requests
+﻿import requests
 import re
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 DEFAULT_TIMEOUT = 300
+MAX_OUTPUT_TOKENS = 512
 
 
 def ollama_status():
@@ -15,6 +16,7 @@ def ollama_status():
         response.raise_for_status()
 
         data = response.json()
+
         names = [
             item.get("name", "")
             for item in data.get("models", [])
@@ -34,10 +36,8 @@ def ollama_status():
 
 
 def clean_model_response(content):
-    """
-    Remove explicit Qwen thinking blocks and reject obvious internal planning.
-    This is a heuristic, not a guarantee of answer quality or safety.
-    """
+    """Remove explicit thinking blocks and obvious internal planning."""
+
     if not isinstance(content, str):
         return ""
 
@@ -51,20 +51,25 @@ def clean_model_response(content):
     if not content:
         return ""
 
-    # Detect obvious internal-planning text rather than displaying it as an answer.
     planning_patterns = [
         r"(?im)^\s*I need to provide\b",
         r"(?im)^\s*Let me analyze\b",
-        r"(?im)^\s*I should structure my response\b",
-        r"(?im)^\s*I must be careful to\b",
-        r"(?im)^\s*I need to structure\b",
+        r"(?im)^\s*I should structure\b",
+        r"(?im)^\s*I must be careful\b",
+        r"(?im)^\s*Hmm, the user wants\b",
+        r"(?im)^\s*The user wants me to\b",
     ]
 
     if any(re.search(pattern, content) for pattern in planning_patterns):
         return ""
 
-    # Remove accidental surrounding Markdown code fences.
-    content = re.sub(r"^```(?:markdown|md|text)?\s*", "", content, flags=re.IGNORECASE)
+    content = re.sub(
+        r"^```(?:markdown|md|text)?\s*",
+        "",
+        content,
+        flags=re.IGNORECASE,
+    )
+
     content = re.sub(r"\s*```$", "", content)
 
     return content.strip()
@@ -76,7 +81,7 @@ def chat_with_ollama(
     timeout=DEFAULT_TIMEOUT,
     temperature=0.2,
 ):
-    """Generate a response using a local Ollama model."""
+    """Generate and validate a response using local Ollama."""
 
     if not isinstance(model, str) or not model.strip():
         return {
@@ -113,7 +118,7 @@ def chat_with_ollama(
                 "think": False,
                 "options": {
                     "temperature": temperature,
-                    "num_predict": 512,
+                    "num_predict": MAX_OUTPUT_TOKENS,
                 },
             },
             timeout=timeout,
@@ -122,8 +127,31 @@ def chat_with_ollama(
         response.raise_for_status()
         data = response.json()
 
+        if data.get("done_reason") == "length":
+            print("\n--- GENERATION DIAGNOSTICS ---")
+            print("Done reason:", data.get("done_reason"))
+            print("Prompt tokens:", data.get("prompt_eval_count"))
+            print("Generated tokens:", data.get("eval_count"))
+            print(
+                "Generation time:",
+                data.get("eval_duration", 0) / 1e9,
+                "seconds"
+            )
+            print("Thinking field:", bool(data.get("message", {}).get("thinking")))
+            print("------------------------------\n")
+
+            return {
+                "ok": False,
+                "content": (
+                    "The model reached its output token limit. "
+                    "The incomplete response was not displayed."
+                ),
+            }
+
         message = data.get("message", {})
-        content = clean_model_response(message.get("content", ""))
+        content = clean_model_response(
+            message.get("content", "")
+        )
 
         if not content:
             return {
@@ -137,6 +165,9 @@ def chat_with_ollama(
         return {
             "ok": True,
             "content": content,
+            "done_reason": data.get("done_reason"),
+            "prompt_tokens": data.get("prompt_eval_count"),
+            "generated_tokens": data.get("eval_count"),
         }
 
     except requests.exceptions.Timeout:

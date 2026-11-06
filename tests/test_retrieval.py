@@ -1,40 +1,53 @@
 ﻿import unittest
 
-from modules.retrieval import retrieve_relevant_chunks
+from modules.retrieval import (
+    build_retrieval_index,
+    retrieve_relevant_chunks,
+)
 
 
 class TestRetrieval(unittest.TestCase):
 
     def test_retrieval_returns_results(self):
-        documents = [
-            {
-                "text": "Heart failure can cause shortness of breath.",
-                "source": "heart_failure.txt",
-            },
-            {
-                "text": "Diabetes affects blood glucose regulation.",
-                "source": "diabetes.txt",
-            },
-        ]
+        text = (
+            "Heart failure can cause shortness of breath. "
+            "Diabetes affects blood glucose regulation."
+        )
+
+        index = build_retrieval_index(
+            text,
+            source_name="medical_test.txt",
+        )
 
         results = retrieve_relevant_chunks(
+            index,
             "heart failure shortness of breath",
-            documents,
         )
 
         self.assertIsInstance(results, list)
+        self.assertGreater(len(results), 0)
+        self.assertIn("Heart failure", results[0]["text"])
+        self.assertGreater(results[0]["score"], 0)
 
     def test_empty_query(self):
-        documents = [
-            {
-                "text": "Heart failure information.",
-                "source": "heart_failure.txt",
-            }
-        ]
+        text = "Heart failure information."
 
-        results = retrieve_relevant_chunks("", documents)
+        index = build_retrieval_index(text)
 
-        self.assertIsInstance(results, list)
+        results = retrieve_relevant_chunks(
+            index,
+            "",
+        )
+
+        self.assertEqual(results, [])
+
+    def test_invalid_index(self):
+        results = retrieve_relevant_chunks(
+            None,
+            "heart failure",
+        )
+
+        self.assertEqual(results, [])
 
 
 if __name__ == "__main__":
